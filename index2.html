@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>手机版坦克大战</title>
+    <style>
+        html, body { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background: #111; 
+            touch-action: none; user-select: none; -webkit-user-select: none; 
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+        
+        #ui { position: fixed; top: max(10px, env(safe-area-inset-top)); left: 15px; color: #fff; font-size: 14px; z-index: 10; pointer-events: none; text-shadow: 1px 1px 2px #000; font-family: monospace;}
+        
+        #joystickZone { 
+            position: fixed; top: 0; left: 0; width: 50vw; height: 100vh; z-index: 20; 
+        }
+        #joystickBase {
+            position: absolute; width: 120px; height: 120px; 
+            background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.2); 
+            border-radius: 50%; transform: translate(-50%, -50%); display: none; pointer-events: none;
+        }
+        #joystickKnob {
+            position: absolute; top: 50%; left: 50%; width: 50px; height: 50px; 
+            background: rgba(255,255,255,0.4); border-radius: 50%; 
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+
+        #fireBtn { 
+            position: fixed; right: 30px; bottom: max(40px, env(safe-area-inset-bottom)); 
+            width: 90px; height: 90px; background: rgba(231,76,60,0.35); 
+            border: 2px solid rgba(231,76,60,0.5); border-radius: 50%; 
+            display: flex; align-items: center; justify-content: center; 
+            color: #fff; font-size: 16px; font-weight: bold; font-family: monospace;
+            z-index: 20; transition: transform 0.1s;
+        }
+        #fireBtn.active { background: rgba(231,76,60,0.7); transform: scale(0.92); }
+
+        .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.9); display: flex; flex-direction: column; justify-content: center; align-items: center; color: #fff; z-index: 100; font-family: monospace;}
+        .overlay h1 { font-size: 32px; margin-bottom: 15px; color: #e74c3c; }
+        .overlay p { font-size: 14px; color: #aaa; margin-bottom: 25px; text-align: center; line-height: 1.8; }
+        .overlay button { padding: 14px 48px; font-size: 18px; background: #e74c3c; color: #fff; border: none; border-radius: 8px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<canvas id="gameCanvas"></canvas>
+<div id="ui">分数: <span id="score">0</span> | 生命: <span id="lives">3</span></div>
+
+<div id="joystickZone">
+    <div id="joystickBase"><div id="joystickKnob"></div></div>
+</div>
+<div id="fireBtn">FIRE</div>
+
+<div id="startScreen" class="overlay">
+    <h1>🎮 坦克大战</h1>
+    <p>左侧屏幕任意位置拖动控制方向<br>右侧按钮射击 · 建议横屏游玩</p>
+    <button onclick="startGame()">开始游戏</button>
+</div>
+<div id="gameOverScreen" class="overlay hidden">
+    <h1>💥 游戏结束</h1>
+    <p>最终得分: <span id="finalScore">0</span></p>
+    <button onclick="startGame()">重新开始</button>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+let W, H, SCALE;
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+    SCALE = Math.min(W, H) / 520;
+}
+window.addEventListener('resize', resize);
+resize();
+
+const TILE = 26, COLS = 20, ROWS = 20;
+let gameLoop, score = 0, lives = 3, isRunning = false;
+let player, enemies = [], bullets = [], walls = [];
+const MAP_TEMPLATE = [
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,1,1,0,0,1,1,0,0,0,0,0,1,1,0,0,1,1,0,0],
+    [0,1,1,0,0,1,1,0,0,0,0,0,1,1,0,0,1,1,0,0],[0,1,1,0,0,1,1,0,2,2,2,0,1,1,0,0,1,1,0,0],
+    [0,0,0,0,0,0,0,0,2,0,2,0,0,0,0,0,0,0,0,0],[0,1,1,0,0,2,2,0,0,0,0,0,2,2,0,0,1,1,0,0],
+    [0,1,1,0,0,2,2,0,0,0,0,0,2,2,0,0,1,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,0,0,1,1,0,1,1,1,0,1,1,0,0,1,1,0,0],[0,1,1,0,0,1,1,0,1,0,1,0,1,1,0,0,1,1,0,0],
+    [0,0,0,0,0,0,0,0,1,0,1,0,0,0,0,0,0,0,0,0],[0,1,1,0,0,2,2,0,0,0,0,0,2,2,0,0,1,1,0,0],
+    [0,1,1,0,0,2,2,0,0,0,0,0,2,2,0,0,1,1,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,1,1,0,0,1,1,0,0,0,0,0,1,1,0,0,1,1,0,0],[0,1,1,0,0,1,1,0,0,0,0,0,1,1,0,0,1,1,0,0],
+    [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,1,1,1,1,1,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,1,0,0,0,1,0,0,0,0,0,0,0,0]
+];
+let MAP = [];
+
+// ============ 【零延迟动态摇杆】 ============
+const joyZone = document.getElementById('joystickZone');
+const joyBase = document.getElementById('joystickBase');
+const joyKnob = document.getElementById('joystickKnob');
+const joystick = { active: false, dx: 0, dy: 0, touchId: null, originX: 0, originY: 0 };
+const MAX_RADIUS = 45;
+
+function updateJoystick(clientX, clientY) {
+    let dx = clientX - joystick.originX;
+    let dy = clientY - joystick.originY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    
+    if (dist > MAX_RADIUS) {
+        dx = (dx / dist) * MAX_RADIUS;
+        dy = (dy / dist) * MAX_RADIUS;
+    }
+    joyKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    joystick.dx = dx / MAX_RADIUS;
+    joystick.dy = dy / MAX_RADIUS;
+}
+
+joyZone.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (joystick.active) return;
+    const t = e.changedTouches[0];
+    joystick.touchId = t.identifier;
+    joystick.active = true;
+    joystick.originX = t.clientX;
+    joystick.originY = t.clientY;
+    
+    joyBase.style.display = 'block';
+    joyBase.style.left = t.clientX + 'px';
+    joyBase.style.top = t.clientY + 'px';
+    
+    updateJoystick(t.clientX, t.clientY);
+}, { passive: false });
+
+joyZone.addEventListener('touchmove', e => {
+    e.preventDefault();
+    if (!joystick.active) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === joystick.touchId) {
+            updateJoystick(e.changedTouches[i].clientX, e.changedTouches[i].clientY);
+            break;
+        }
+    }
+}, { passive: false });
+
+const endJoystick = (e) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === joystick.touchId) {
+            joystick.active = false;
+            joystick.dx = 0;
+            joystick.dy = 0;
+            joystick.touchId = null;
+            joyBase.style.display = 'none';
+            break;
+        }
+    }
+};
+joyZone.addEventListener('touchend', endJoystick);
+joyZone.addEventListener('touchcancel', endJoystick);
+
+const fireBtn = document.getElementById('fireBtn');
+let firing = false;
+fireBtn.addEventListener('touchstart', e => { e.preventDefault(); firing = true; fireBtn.classList.add('active'); }, { passive: false });
+const endFire = (e) => { e.preventDefault(); firing = false; fireBtn.classList.remove('active'); };
+fireBtn.addEventListener('touchend', endFire);
+fireBtn.addEventListener('touchcancel', endFire);
+
+class Tank {
+    constructor(x, y, color, isPlayer = false) {
+        this.x = x; this.y = y; this.color = color; this.isPlayer = isPlayer;
+        this.dir = 0; this.speed = isPlayer ? 2 : 1.2;
+        this.size = TILE - 2; this.cooldown = 0; this.alive = true;
+    }
+    draw() {
+        if (!this.alive) return;
+        ctx.save();
+        ctx.translate((this.x + TILE/2) * SCALE, (this.y + TILE/2) * SCALE);
+        ctx.rotate(this.dir * Math.PI / 2);
+        const s = this.size * SCALE;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-s/2, -s/2, s, s);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(-2*SCALE, -s/2 - 4*SCALE, 4*SCALE, 8*SCALE);
+        ctx.restore();
+    }
+    move(dx, dy) {
+        if (!this.alive) return;
+        const nx = this.x + dx * this.speed;
+        const ny = this.y + dy * this.speed;
+        if (!checkCollision(nx, ny, this.size)) { this.x = nx; this.y = ny; }
+    }
+    shoot() {
+        if (!this.alive || this.cooldown > 0) return;
+        const bx = this.x + TILE/2 - 3 + [0,1,0,-1][this.dir] * (TILE/2);
+        const by = this.y + TILE/2 - 3 + [-1,0,1,0][this.dir] * (TILE/2);
+        bullets.push({ x: bx, y: by, dir: this.dir, owner: this.isPlayer ? 'player' : 'enemy', speed: 4 });
+        this.cooldown = this.isPlayer ? 18 : 60;
+    }
+    update() { if (this.cooldown > 0) this.cooldown--; }
+}
+
+function checkCollision(x, y, size) {
+    const m = 1;
+    const l = Math.floor((x+m)/TILE), r = Math.floor((x+size-m)/TILE);
+    const t = Math.floor((y+m)/TILE), b = Math.floor((y+size-m)/TILE);
+    for (let row = t; row <= b; row++)
+        for (let col = l; col <= r; col++) {
+            if (row<0||row>=ROWS||col<0||col>=COLS) return true;
+            if (MAP[row] && MAP[row][col]) return true;
+        }
+    return false;
+}
+
+function initWalls() {
+    walls = [];
+    for (let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++)
+        if(MAP[r][c]) walls.push({x:c*TILE,y:r*TILE,type:MAP[r][c]});
+}
+
+function drawMap() {
+    walls.forEach(w => {
+        ctx.fillStyle = w.type===2 ? '#aaa' : '#b5651d';
+        ctx.fillRect(w.x*SCALE, w.y*SCALE, TILE*SCALE, TILE*SCALE);
+        if (w.type===1) {
+            ctx.strokeStyle='#8B4513'; ctx.lineWidth=SCALE;
+            ctx.strokeRect((w.x+2)*SCALE,(w.y+2)*SCALE,(TILE-4)*SCALE,(TILE-4)*SCALE);
+        }
+    });
+}
+
+function spawnEnemy() {
+    if (enemies.length < 4 && Math.random() < 0.015) {
+        // 注意：这里敌人生成位置也可能卡墙，但非本修复重点，可后续优化
+        const pos = [[0,0],[COLS*TILE-TILE,0],[0,(ROWS-2)*TILE]][Math.floor(Math.random()*3)];
+        enemies.push(new Tank(pos[0], pos[1], '#e74c3c'));
+    }
+}
+
+function update() {
+    if (!isRunning) return;
+    
+    if (joystick.active) {
+        const adx = Math.abs(joystick.dx);
+        const ady = Math.abs(joystick.dy);
+        const threshold = 0.05; 
+        
+        if (adx > threshold || ady > threshold) {
+            if (adx >= ady) {
+                player.dir = joystick.dx > 0 ? 1 : 3;
+                player.move(joystick.dx, 0);
+            } else {
+                player.dir = joystick.dy > 0 ? 2 : 0;
+                player.move(0, joystick.dy);
+            }
+        }
+    }
+    
+    if (firing) player.shoot();
+    player.update();
+
+    enemies.forEach(e => {
+        e.update();
+        if (Math.random()<0.03) e.dir = Math.floor(Math.random()*4);
+        const dirs=[[0,-1],[1,0],[0,1],[-1,0]];
+        e.move(dirs[e.dir][0], dirs[e.dir][1]);
+        if (Math.random()<0.02) e.shoot();
+    });
+
+    for (let i=bullets.length-1; i>=0; i--) {
+        const b = bullets[i];
+        b.x += [0,b.speed,0,-b.speed][b.dir];
+        b.y += [-b.speed,0,b.speed,0][b.dir];
+        if (b.x<0||b.x>COLS*TILE||b.y<0||b.y>ROWS*TILE) { bullets.splice(i,1); continue; }
+        const gc=Math.floor(b.x/TILE), gr=Math.floor(b.y/TILE);
+        if (gr>=0&&gr<ROWS&&gc>=0&&gc<COLS&&MAP[gr][gc]) {
+            if (MAP[gr][gc]===1) MAP[gr][gc]=0;
+            bullets.splice(i,1); initWalls(); continue;
+        }
+        let hit=false;
+        if (b.owner==='player') {
+            enemies.forEach((e,idx)=>{
+                if(e.alive&&Math.abs(b.x-e.x-TILE/2)<TILE/2&&Math.abs(b.y-e.y-TILE/2)<TILE/2){
+                    e.alive=false; enemies.splice(idx,1); score+=100; hit=true;
+                }
+            });
+        } else {
+            if(player.alive&&Math.abs(b.x-player.x-TILE/2)<TILE/2&&Math.abs(b.y-player.y-TILE/2)<TILE/2){
+                lives--; hit=true; if(lives<=0) gameOver();
+            }
+        }
+        if(hit) bullets.splice(i,1);
+    }
+    spawnEnemy();
+    document.getElementById('score').textContent = score;
+    document.getElementById('lives').textContent = lives;
+}
+
+function draw() {
+    ctx.clearRect(0,0,W,H);
+    const mapW = COLS*TILE*SCALE, mapH = ROWS*TILE*SCALE;
+    const ox = (W-mapW)/2, oy = (H-mapH)/2;
+    ctx.save(); ctx.translate(ox, oy);
+    drawMap();
+    player.draw();
+    enemies.forEach(e=>e.draw());
+    bullets.forEach(b=>{
+        ctx.fillStyle='#ff0'; ctx.beginPath();
+        ctx.arc(b.x*SCALE, b.y*SCALE, 3*SCALE, 0, Math.PI*2); ctx.fill();
+    });
+    ctx.restore();
+}
+
+function gameFrame() {
+    if(!isRunning) return;
+    update(); draw();
+    gameLoop = requestAnimationFrame(gameFrame);
+}
+
+function startGame() {
+    score=0; lives=3; enemies=[]; bullets=[]; firing=false;
+    joystick.active = false; joystick.dx = 0; joystick.dy = 0;
+    joyBase.style.display = 'none';
+    MAP = MAP_TEMPLATE.map(r=>[...r]);
+    initWalls(); resize();
+    // ★★★ 修复：将玩家出生位置从 (9,18) 改为 (9,17) 避免卡墙 ★★★
+    player = new Tank(9 * TILE, 17 * TILE, '#2ecc71', true);
+    isRunning = true;
+    document.getElementById('startScreen').classList.add('hidden');
+    document.getElementById('gameOverScreen').classList.add('hidden');
+    cancelAnimationFrame(gameLoop); gameFrame();
+}
+
+function gameOver() {
+    isRunning=false;
+    document.getElementById('finalScore').textContent=score;
+    document.getElementById('gameOverScreen').classList.remove('hidden');
+}
+</script>
+</body>
+</html>
